@@ -130,7 +130,7 @@
 │   ├── config.py
 │   └── utils.py
 ├── celery_worker.py
-├── requirements.txt
+├──
 ├── README.md
 └── .env
 ```
