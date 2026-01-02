@@ -53,3 +53,6 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 # Создание таблиц
 def create_tables():
     Base.metadata.create_all(bind=engine)
+
+# Экспортируем модели и SessionLocal
+__all__ = ['NewsItem', 'Source', 'Keyword', 'Post', 'SessionLocal', 'Base', 'create_tables']
