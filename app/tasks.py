@@ -1,14 +1,9 @@
 from celery import Celery
-from decouple import config
 from app.news_parser.sites import HabrParser
-from app.news_parser.telegram import TelegramParser
-from app.models import NewsItem, SessionLocal, Keyword, Post, Source
+from app.models import NewsItem, SessionLocal, Keyword, Post
 import os
 import openai
-import asyncio
 from telethon import TelegramClient
-from sqlalchemy.orm import sessionmaker
-import uuid
 
 # Подключение к Redis
 celery = Celery(
@@ -59,59 +54,6 @@ def collect_news_task():
     return f"Собрано {len(news_items)} новостей"
 
 @celery.task
-def collect_telegram_news_task():
-    """
-    Задача: собрать новости из Telegram-каналов и сохранить в БД.
-    """
-    db = SessionLocal()
-    try:
-        # Получить Telegram-источники
-        telegram_sources = db.query(Source).filter(Source.source_type == 'tg', Source.enabled == True).all()
-
-        # Загрузка переменных через decouple
-        api_id = config('TELEGRAM_API_ID')
-        api_hash = config('TELEGRAM_API_HASH')
-        phone = config('TELEGRAM_PHONE')
-
-        parser = TelegramParser(
-            api_id=api_id,
-            api_hash=api_hash,
-            phone=phone  # <-- Передаём phone
-        )
-
-        all_news = []
-        for source in telegram_sources:
-            # Пример: source.url содержит @username
-            news = asyncio.run(parser.parse(source.url, limit=10))
-            all_news.extend(news)
-
-        # Сохранить новости в базу
-        for item in all_news:
-            # Пропустить, если нет URL (нельзя сравнить)
-            if item.get('url') is None:
-                continue
-
-            # Проверить, нет ли уже такой новости
-            existing = db.query(NewsItem).filter(NewsItem.url == item['url']).first()
-            if not existing:
-                # Убедиться, что обязательные поля не None
-                news_item = NewsItem(
-                    id=item.get('id', str(uuid.uuid4())),
-                    title=item.get('title') or '',  # Обязательное поле
-                    url=item['url'],  # Уже проверили, что не None
-                    summary=item.get('summary', ''),
-                    source=item.get('source', 'telegram'),
-                    published_at=item.get('published_at'),
-                    raw_text=item.get('raw_text', '')
-                )
-                db.add(news_item)
-        db.commit()
-
-        return f"Собрано {len(all_news)} новостей из Telegram"
-    finally:
-        db.close()
-
-@celery.task
 def filter_news_task():
     """
     Задача: отфильтровать новости по ключевым словам.
@@ -134,11 +76,13 @@ def filter_news_task():
     finally:
         db.close()
 
+
 @celery.task
 def generate_post_task(news_id: str):
     """
     Задача: сгенерировать пост через AI.
     """
+
     db = SessionLocal()
     try:
         news_item = db.query(NewsItem).filter(NewsItem.id == news_id).first()
@@ -172,11 +116,14 @@ def generate_post_task(news_id: str):
     finally:
         db.close()
 
+from telethon import TelegramClient
+
 @celery.task
 def publish_post_task(post_id: str):
     """
     Задача: опубликовать пост в Telegram-канал.
     """
+
     db = SessionLocal()
     try:
         post = db.query(Post).filter(Post.id == post_id).first()
@@ -184,9 +131,9 @@ def publish_post_task(post_id: str):
             return "Пост не готов к публикации"
 
         # Подключение к Telegram
-        api_id = int(config('TELEGRAM_API_ID'))
-        api_hash = config('TELEGRAM_API_HASH')
-        channel_username = config('TELEGRAM_CHANNEL')
+        api_id = int(os.getenv('TELEGRAM_API_ID'))
+        api_hash = os.getenv('TELEGRAM_API_HASH')
+        channel_username = os.getenv('TELEGRAM_CHANNEL')
 
         client = TelegramClient('session_name', api_id, api_hash)
         client.start()
@@ -201,19 +148,4 @@ def publish_post_task(post_id: str):
         return f"Пост {post_id} опубликован"
     finally:
         db.close()
-        if 'client' in locals():
-            client.disconnect()
-
-# Настройка расписания для Celery Beat
-from celery.schedules import crontab
-
-celery.conf.beat_schedule = {
-    'collect-site-news': {
-        'task': 'app.tasks.collect_news_task',
-        'schedule': crontab(minute='*/30'),  # каждые 30 минут
-    },
-    'collect-telegram-news': {
-        'task': 'app.tasks.collect_telegram_news_task',
-        'schedule': crontab(minute='*/30'),  # каждые 30 минут
-    },
-}
+        client.disconnect()
