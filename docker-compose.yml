@@ -2,70 +2,55 @@ version: '3.8'
 
 services:
   redis:
-    image: redis:7-alpine
-    container_name: redis-aibot-develop
+    image: redis:7.4.7
     ports:
       - "6379:6379"
     volumes:
       - redis_data:/data
     command: redis-server --appendonly yes
-    restart: unless-stopped
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
 
-  worker:
-    build: .
-    container_name: celery-worker-develop
-    command: >
-      celery -A app.tasks worker
-      --loglevel=info
-      --pool=solo
-    depends_on:
-      - redis
-    env_file:
-      - .env
-    environment:
-      - REDIS_URL=redis://redis:6379/0
+  celery-beat:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: celery -A app.tasks beat --loglevel=info
     volumes:
       - .:/app
-      - ./sessions:/app/sessions
-    restart: unless-stopped
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-  beat:
-    build: .
-    container_name: celery-beat-develop
-    command: >
-      celery -A app.tasks beat
-      --loglevel=info
-      --scheduler celery.beat.PersistentScheduler
+      - sessions:/app/sessions
     depends_on:
       - redis
-      - worker
-    env_file:
-      - .env
     environment:
       - REDIS_URL=redis://redis:6379/0
-      - C_FORCE_ROOT=true
+
+  celery-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: celery -A app.tasks worker --loglevel=info --pool=solo
     volumes:
       - .:/app
-      - ./sessions:/app/sessions
-      - ./celerybeat-schedule:/celerybeat-schedule
-    working_dir: /app
-    restart: unless-stopped
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
+      - sessions:/app/sessions
+    depends_on:
+      - redis
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+
+  fastapi:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    volumes:
+      - .:/app
+      - sessions:/app/sessions
+    ports:
+      - "8000:8000"
+    depends_on:
+      - redis
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+
 
 volumes:
   redis_data:
-  celerybeat-schedule:
+  sessions:

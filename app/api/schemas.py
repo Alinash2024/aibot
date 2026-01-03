@@ -47,3 +47,6 @@ class Post(PostBase):
 
     class Config:
         from_attributes = True
+
+class GeneratePostRequest(BaseModel):
+    news_id: str
