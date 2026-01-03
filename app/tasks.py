@@ -4,8 +4,8 @@ from app.news_parser.sites import HabrParser
 from app.news_parser.telegram import TelegramParser
 from app.models import NewsItem, SessionLocal, Keyword, Post, Source
 from app.telegram.bot import publish_post_to_telegram
+from app.ai.generator import generate_post
 import os
-import openai
 import asyncio
 from sqlalchemy.orm import sessionmaker
 import uuid
@@ -24,9 +24,6 @@ celery.conf.update(
     timezone='UTC',
     enable_utc=True,
 )
-
-# Настройка OpenAI
-openai.api_key = os.getenv('OPENAI_API_KEY')
 
 @celery.task
 def collect_news_task():
@@ -145,19 +142,8 @@ def generate_post_task(news_id: str):
         if not news_item:
             return "Новость не найдена"
 
-        # Промпт для GPT
-        prompt = f"""
-        Сделай краткое, интересное описание новости для Telegram-канала, добавь emoji, call to action.
-        Новость: {news_item.title}
-        Описание: {news_item.summary}
-        """
-
-        response = openai.ChatCompletion.create(
-            model="gpt-4",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=200
-        )
-        generated_text = response.choices[0].message['content'].strip()
+        # Генерируем пост через AI
+        generated_text = generate_post(news_item.summary)  # ✅ Вызываем генератор
 
         # Сохраняем сгенерированный пост
         post = Post(
