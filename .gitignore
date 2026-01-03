@@ -12,6 +12,7 @@ __pycache__/
 
 # Sessions
 sessions/
+!sessions/.gitkeep
 
 # Database
 aibot.db
