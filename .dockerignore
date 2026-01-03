@@ -1,6 +1,26 @@
+# Environment variables
 .env
-__pycache__
-.venv
+
+# Python cache
+__pycache__/
+
+# Virtual environments
+.venv/
+
+# IDE settings
 .idea/
+
+# Sessions
 sessions/
+!sessions/.gitkeep
+
+# Database
 aibot.db
+
+# Distribution / packaging
+*.egg-info/
+
+# Celery beat schedule
+celerybeat-schedule
+celerybeat-schedule-shm
+celerybeat-schedule-wal
