@@ -1,10 +1,9 @@
 import openai
-import os
 from typing import Optional
 
 class OpenAIClient:
     def __init__(self, api_key: str):
-        openai.api_key = api_key
+        self.client = openai.OpenAI(api_key=api_key)
 
     def generate_post(self, news_text: str) -> Optional[str]:
         """
@@ -16,12 +15,12 @@ class OpenAIClient:
         """
 
         try:
-            response = openai.ChatCompletion.create(
+            response = self.client.chat.completions.create(
                 model="gpt-4",
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=200
             )
-            return response.choices[0].message['content'].strip()
+            return response.choices[0].message.content.strip()
         except Exception as e:
             print(f"Ошибка API: {e}")
             return None
