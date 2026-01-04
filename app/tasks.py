@@ -7,10 +7,8 @@ from app.telegram.bot import publish_post_to_telegram
 from app.ai.generator import generate_post
 import os
 import asyncio
-from sqlalchemy.orm import sessionmaker
 import uuid
 
-# Подключение к Redis
 celery = Celery(
     'aibot',
     broker=os.getenv('REDIS_URL', 'redis://localhost:6379/0'),
@@ -28,7 +26,7 @@ celery.conf.update(
 @celery.task
 def collect_news_task():
     """
-    Задача: собрать новости с сайтов и сохранить в БД.
+    Task: collect news from websites and save it in the database.
     """
     parser = HabrParser()
     news_items = parser.parse()
@@ -36,7 +34,6 @@ def collect_news_task():
     db = SessionLocal()
     try:
         for item in news_items:
-            # Проверяем, нет ли уже такой новости
             existing = db.query(NewsItem).filter(NewsItem.url == item['url']).first()
             if not existing:
                 news_item = NewsItem(
@@ -53,19 +50,17 @@ def collect_news_task():
     finally:
         db.close()
 
-    return f"Собрано {len(news_items)} новостей"
+    return f"Collected {len(news_items)} news"
 
 @celery.task
 def collect_telegram_news_task():
     """
-    Задача: собрать новости из Telegram-каналов и сохранить в БД.
+    Task: collect news from Telegram channels and save in the database.
     """
     db = SessionLocal()
     try:
-        # Получить Telegram-источники
         telegram_sources = db.query(Source).filter(Source.source_type == 'tg', Source.enabled == True).all()
 
-        # Загрузка переменных через decouple
         api_id = config('TELEGRAM_API_ID')
         api_hash = config('TELEGRAM_API_HASH')
         phone = config('TELEGRAM_PHONE')
@@ -73,29 +68,24 @@ def collect_telegram_news_task():
         parser = TelegramParser(
             api_id=api_id,
             api_hash=api_hash,
-            phone=phone  # <-- Передаём phone
+            phone=phone
         )
 
         all_news = []
         for source in telegram_sources:
-            # Пример: source.url содержит @username
             news = asyncio.run(parser.parse(source.url, limit=10))
             all_news.extend(news)
 
-        # Сохранить новости в базу
         for item in all_news:
-            # Пропустить, если нет URL (нельзя сравнить)
             if item.get('url') is None:
                 continue
 
-            # Проверить, нет ли уже такой новости
             existing = db.query(NewsItem).filter(NewsItem.url == item['url']).first()
             if not existing:
-                # Убедиться, что обязательные поля не None
                 news_item = NewsItem(
                     id=item.get('id', str(uuid.uuid4())),
-                    title=item.get('title') or '',  # Обязательное поле
-                    url=item['url'],  # Уже проверили, что не None
+                    title=item.get('title') or '',
+                    url=item['url'],
                     summary=item.get('summary', ''),
                     source=item.get('source', 'telegram'),
                     published_at=item.get('published_at'),
@@ -104,22 +94,20 @@ def collect_telegram_news_task():
                 db.add(news_item)
         db.commit()
 
-        return f"Собрано {len(all_news)} новостей из Telegram"
+        return f"Collected {len(all_news)} news from Telegram"
     finally:
         db.close()
 
 @celery.task
 def filter_news_task():
     """
-    Задача: отфильтровать новости по ключевым словам.
+    Task: filter news by keywords.
     """
     db = SessionLocal()
     try:
-        # Получаем ключевые слова
         keywords = db.query(Keyword.word).all()
         keywords = [k[0] for k in keywords]
 
-        # Получаем все новости
         news_items = db.query(NewsItem).all()
 
         filtered_news = []
@@ -127,25 +115,23 @@ def filter_news_task():
             if any(keyword.lower() in item.title.lower() or keyword.lower() in item.summary.lower() for keyword in keywords):
                 filtered_news.append(item.id)
 
-        return f"Отфильтровано {len(filtered_news)} новостей"
+        return f"Filtered {len(filtered_news)} news"
     finally:
         db.close()
 
 @celery.task
 def generate_post_task(news_id: str):
     """
-    Задача: сгенерировать пост через AI.
+    Task: generate a post via AI.
     """
     db = SessionLocal()
     try:
         news_item = db.query(NewsItem).filter(NewsItem.id == news_id).first()
         if not news_item:
-            return "Новость не найдена"
+            return "News not found"
 
-        # Генерируем пост через AI
-        generated_text = generate_post(news_item.summary)  # ✅ Вызываем генератор
+        generated_text = generate_post(news_item.summary)
 
-        # Сохраняем сгенерированный пост
         post = Post(
             news_id=news_item.id,
             generated_text=generated_text,
@@ -154,33 +140,30 @@ def generate_post_task(news_id: str):
         db.add(post)
         db.commit()
 
-        return f"Пост для новости {news_id} сгенерирован"
+        return f"Post for news {news_id} generated"
     finally:
         db.close()
 
 @celery.task
 def publish_post_task(post_id: str):
     """
-    Задача: опубликовать пост в Telegram-канал.
+    Task: publish a post in the Telegram channel.
     """
     db = SessionLocal()
     try:
         post = db.query(Post).filter(Post.id == post_id).first()
         if not post or post.status != 'generated':
-            return "Пост не готов к публикации"
+            return "Post is not ready for publication"
 
-        # Публикуем пост
         result = publish_post_to_telegram(post.generated_text)
 
         if result == 'published':
-            # Обновляем статус
             post.status = 'published'
             db.commit()
-            return f"Пост {post_id} опубликован"
+            return f"Post {post_id} published"
         else:
-            # Обновляем статус
             post.status = 'failed'
             db.commit()
-            return f"Пост {post_id} не опубликован"
+            return f"Post {post_id} not published"
     finally:
         db.close()

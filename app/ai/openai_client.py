@@ -7,11 +7,11 @@ class OpenAIClient:
 
     def generate_post(self, news_text: str) -> Optional[str]:
         """
-        Генерирует пост через OpenAI API.
+        Generates post via OpenAI.
         """
         prompt = f"""
-        Сделай краткое, интересное описание новости для Telegram-канала, добавь emoji, call to action.
-        Новость: {news_text}
+        Make a short, interesting description of the news for the Telegram channel, add an emoji, call to action.
+        News: {news_text}
         """
 
         try:
@@ -22,5 +22,5 @@ class OpenAIClient:
             )
             return response.choices[0].message.content.strip()
         except Exception as e:
-            print(f"Ошибка API: {e}")
+            print(f"Error API: {e}")
             return None

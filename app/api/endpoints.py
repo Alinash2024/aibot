@@ -17,7 +17,6 @@ def get_db():
         db.close()
 
 
-# CRUD для Source
 
 @router.get("/sources/", response_model=List[SourceSchema])
 def read_sources(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
@@ -67,7 +66,6 @@ def delete_source(source_id: int, db: Session = Depends(get_db)):
     return {"detail": "Source deleted"}
 
 
-# CRUD для Keyword
 
 @router.get("/keywords/", response_model=List[KeywordSchema])
 def read_keywords(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
@@ -117,7 +115,6 @@ def delete_keyword(keyword_id: int, db: Session = Depends(get_db)):
     return {"detail": "Keyword deleted"}
 
 
-# API для просмотра истории постов
 
 @router.get("/posts/", response_model=List[PostSchema])
 def read_posts(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
@@ -133,16 +130,13 @@ def read_post(post_id: int, db: Session = Depends(get_db)):
     return post
 
 
-# API для ручной генерации поста
 
-@router.post("/generate/", summary="Запустить генерацию поста вручную")
+@router.post("/generate/", summary="Start generating a post manually")
 def manual_generate_post(request: GeneratePostRequest, db: Session = Depends(get_db)):
-    # Проверить, что новость существует
     news_item = db.query(NewsItem).filter(NewsItem.id == request.news_id).first()
     if not news_item:
         raise HTTPException(status_code=404, detail="News item not found")
 
-    # Запустить задачу
     result = generate_post_task.delay(news_item.id)
 
     return {"task_id": result.id, "message": f"Generation started for news {request.news_id}"}

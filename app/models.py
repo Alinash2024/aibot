@@ -23,8 +23,8 @@ class Source(Base):
 
     id = Column(Integer, primary_key=True)
     name = Column(String, nullable=False)
-    url = Column(String)  # URL сайта или @username Telegram-канала
-    source_type = Column(String, nullable=False)  # 'site' или 'tg'
+    url = Column(String)
+    source_type = Column(String, nullable=False)
     enabled = Column(Boolean, default=True)
 
 
@@ -42,17 +42,14 @@ class Post(Base):
     news_id = Column(String, ForeignKey("news_items.id"))
     generated_text = Column(String)
     published_at = Column(DateTime)
-    status = Column(String, default='new')  # 'new', 'generated', 'published', 'failed'
+    status = Column(String, default='new')
 
 
-# Подключение к БД (пример с SQLite)
 DATABASE_URL = "sqlite:///./aibot.db"
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-# Создание таблиц
 def create_tables():
     Base.metadata.create_all(bind=engine)
 
-# Экспортируем модели и SessionLocal
 __all__ = ['NewsItem', 'Source', 'Keyword', 'Post', 'SessionLocal', 'Base', 'create_tables']

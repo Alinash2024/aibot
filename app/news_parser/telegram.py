@@ -38,24 +38,20 @@ class TelegramParser(ABC):
         news_items = []
 
         try:
-            # Get the channel entity
             channel = await self.client.get_entity(channel_username)
 
-            # Get recent messages from the channel
             async for message in self.client.iter_messages(
                     channel,
                     limit=limit,
                     filter=None
             ):
-                if isinstance(message, Message) and message.message:  # Only process text messages
+                if isinstance(message, Message) and message.message:
                     try:
-                        # Extract message data
                         title = message.message[:100] if len(message.message) > 100 else message.message
                         summary = message.message
                         url = f"https://t.me/{channel_username}/{message.id}" if message.id else None
                         dt = message.date if message.date else datetime.utcnow()
 
-                        # Create news item with required structure
                         news_item = {
                             'id': str(uuid.uuid4()),
                             'title': title,

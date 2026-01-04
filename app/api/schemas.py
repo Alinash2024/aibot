@@ -4,7 +4,7 @@ from typing import Optional
 class SourceBase(BaseModel):
     name: str
     url: str
-    source_type: str  # 'site' или 'tg'
+    source_type: str
     enabled: bool = True
 
 class SourceCreate(SourceBase):

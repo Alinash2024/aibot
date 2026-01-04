@@ -1,5 +1,4 @@
 from telethon import TelegramClient
-from decouple import config
 import asyncio
 
 class TelegramPublisher:

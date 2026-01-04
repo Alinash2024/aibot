@@ -3,7 +3,7 @@ from decouple import config
 
 def publish_post_to_telegram(post_text: str):
     """
-    Публикует пост в Telegram-канал.
+    Publishes a post in the Telegram channel.
     """
     api_id = config('TELEGRAM_API_ID')
     api_hash = config('TELEGRAM_API_HASH')
