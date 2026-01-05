@@ -1,9 +1,26 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
-from app.api.endpoints import router as api_router
 
-app = FastAPI(title="AI News Bot API")
+from .api.endpoints import router
+from .database.db import init_db, async_engine
 
-app.include_router(api_router, prefix="/api/v1")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await init_db()
+    yield
+    await async_engine.dispose()
+
+
+app = FastAPI(
+    title="AIBot",
+    description="AIBot",
+    version="0.0.1",
+    lifespan=lifespan
+)
+
+app.include_router(router)
 
 @app.get("/")
 def read_root():

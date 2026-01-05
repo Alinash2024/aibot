@@ -1,52 +1,89 @@
-from pydantic import BaseModel
+from datetime import datetime
 from typing import Optional
 
+from pydantic import BaseModel, Field
+
+from app.database import SourceType, PostStatus
+
+
 class SourceBase(BaseModel):
-    name: str
-    url: str
-    source_type: str
-    enabled: bool = True
+    type: SourceType = Field(..., description='Тип источника')
+    name: str = Field(..., description='Название источника')
+    url: Optional[str] = Field(None, description='URL-адрес источника')
+    enabled: bool = Field(default=True, description='Включен ли источник(для парсинга)')
+
 
 class SourceCreate(SourceBase):
     pass
 
-class SourceUpdate(BaseModel):
-    name: Optional[str] = None
-    url: Optional[str] = None
-    source_type: Optional[str] = None
-    enabled: Optional[bool] = None
 
-class Source(SourceBase):
-    id: int
+class SourceResponse(SourceBase):
+    id: str
+    created_at: datetime
 
     class Config:
         from_attributes = True
 
+
+class SourceUpdate(BaseModel):
+    type: Optional[SourceType] = None
+    name: Optional[str] = None
+    url: Optional[str] = None
+    enabled: Optional[bool] = None
+
+
 class KeywordBase(BaseModel):
-    word: str
+    word: str = Field(..., description='Ключевое слово')
+
 
 class KeywordCreate(KeywordBase):
     pass
 
-class KeywordUpdate(BaseModel):
-    word: Optional[str] = None
 
-class Keyword(KeywordBase):
-    id: int
+class KeywordResponse(KeywordBase):
+    id: str
 
     class Config:
         from_attributes = True
 
-class PostBase(BaseModel):
-    generated_text: Optional[str] = None
-    status: str
 
-class Post(PostBase):
-    id: int
-    news_id: str
+class NewsItemResponse(BaseModel):
+    id: str
+    title: str
+    url: Optional[str]
+    summary: str
+    source: str
+    published_at: datetime
+    raw_text: Optional[str]
+    created_at: datetime
 
     class Config:
         from_attributes = True
 
-class GeneratePostRequest(BaseModel):
+
+class PostResponse(BaseModel):
+    id: str
     news_id: str
+    generated_text: Optional[str]
+    published_at: Optional[datetime]
+    status: PostStatus
+    created_at: datetime
+
+    # TODO: news_item: NewsItemResponse
+
+    class Config:
+        from_attributes = True
+
+
+class TelegramAuthRequest(BaseModel):
+    phone: str = Field(..., description='Номер телефона в формате +7XXXXXXXXXX')
+    code: Optional[str] = Field(None, description='Код подтверждения из Telegram')
+    password: Optional[str] = Field(None, description='Пароль двухфакторной аутентификации')
+
+
+class TelegramAuthResponse(BaseModel):
+    success: bool
+    message: str
+    phone: Optional[str] = None
+    username: Optional[str] = None
+    next_step: Optional[str] = Field(None, description='Следующий шаг: code или password')

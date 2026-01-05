@@ -1,169 +1,213 @@
-from celery import Celery
-from decouple import config
-from app.news_parser.sites import HabrParser
-from app.news_parser.telegram import TelegramParser
-from app.models import NewsItem, SessionLocal, Keyword, Post, Source
-from app.telegram.bot import publish_post_to_telegram
-from app.ai.generator import generate_post
-import os
 import asyncio
-import uuid
+import logging
+from datetime import datetime
 
-celery = Celery(
-    'aibot',
-    broker=os.getenv('REDIS_URL', 'redis://localhost:6379/0'),
-    backend=os.getenv('REDIS_URL', 'redis://localhost:6379/0')
-)
+from app.ai.generator import generate_posts
+from app.database.models import NewsItem, PostStatus
+from app.database.db import get_db_sync
+from app.database.models import Source, Post
+from app.database.types import SourceType
+from app.telegram.publisher import publish_post
+from app.utils import parse_site_source, parse_telegram_source
+from celery_worker import celery_app
 
-celery.conf.update(
-    task_serializer='json',
-    accept_content=['json'],
-    result_serializer='json',
-    timezone='UTC',
-    enable_utc=True,
-)
+logger = logging.getLogger(__name__)
 
-@celery.task
-def collect_news_task():
+
+@celery_app.task(name='app.tasks.parse_news', bind=True, max_retries=3)
+def parse_news(self):
     """
-    Task: collect news from websites and save it in the database.
+    Задача Celery для парсинга новостей из всех активных источников.
+    Получает источники из БД, парсит их и сохраняет новости.
     """
-    parser = HabrParser()
-    news_items = parser.parse()
+    logger.info('Начало парсинга новостей...')
 
-    db = SessionLocal()
     try:
-        for item in news_items:
-            existing = db.query(NewsItem).filter(NewsItem.url == item['url']).first()
-            if not existing:
-                news_item = NewsItem(
-                    id=item['id'],
-                    title=item['title'],
-                    url=item['url'],
-                    summary=item['summary'],
-                    source=item['source'],
-                    published_at=item['published_at'],
-                    raw_text=item['raw_text']
-                )
-                db.add(news_item)
-        db.commit()
-    finally:
-        db.close()
+        db_gen = get_db_sync()
+        session = next(db_gen)
 
-    return f"Collected {len(news_items)} news"
+        try:
+            sources = session.query(Source).filter(Source.enabled == True).all()
 
-@celery.task
-def collect_telegram_news_task():
-    """
-    Task: collect news from Telegram channels and save in the database.
-    """
-    db = SessionLocal()
+            if not sources:
+                logger.warning("Не найдено активных источников для парсинга")
+                return {'status': 'success', 'saved': 0, 'sources_processed': 0}
+
+            logger.info(f"Найдено активных источников: {len(sources)}")
+
+            total_saved = 0
+            for source in sources:
+                source_name = source.name
+                try:
+                    source_type = source.type
+
+                    if source_type == SourceType.SITE:
+                        saved = parse_site_source(session, source)
+                    elif source_type == SourceType.TG:
+                        saved = parse_telegram_source(session, source)
+                    else:
+                        logger.warning(f"Неизвестный тип источника: {source_type} для '{source_name}'")
+                        saved = 0
+
+                    total_saved += saved
+
+                except Exception as e:
+                    logger.error(f"Ошибка при обработке источника '{source_name}': {e}", exc_info=True)
+                    session.rollback()
+                    continue
+
+            logger.info(f'Парсинг завершен. Всего сохранено новостей: {total_saved}')
+
+            result = {
+                'status': 'success',
+                'saved': total_saved,
+                'sources_processed': len(sources)
+            }
+
+            if total_saved > 0:
+                logger.info(f'Запускаем генерацию постов для {total_saved} новых новостей')
+                generate_posts_task.delay()
+
+            return result
+        except Exception as e:
+            logger.error(f'Ошибка при парсинге новостей: {e}', exc_info=True)
+            session.rollback()
+            raise
+        finally:
+            try:
+                next(db_gen)
+            except StopIteration:
+                pass
+
+    except Exception as e:
+        logger.error(f'Критическая ошибка при парсинге новостей: {e}', exc_info=True)
+        raise self.retry(exc=e, countdown=60)
+
+
+@celery_app.task(name='app.tasks.generate_posts', bind=True, max_retries=3)
+def generate_posts_task(self):
+    logger.info('Выполняем задачу генерации постов по новости')
     try:
-        telegram_sources = db.query(Source).filter(Source.source_type == 'tg', Source.enabled == True).all()
+        db_gen = get_db_sync()
+        session = next(db_gen)
 
-        api_id = config('TELEGRAM_API_ID')
-        api_hash = config('TELEGRAM_API_HASH')
-        phone = config('TELEGRAM_PHONE')
+        try:
+            posts = session.query(Post).filter(Post.status == PostStatus.NEW).all()
+            if not posts:
+                logger.info('Нет новых постов для генерации')
+                return {'status': 'success', 'generated': 0}
 
-        parser = TelegramParser(
-            api_id=api_id,
-            api_hash=api_hash,
-            phone=phone
-        )
+            generated_count = 0
+            for post in posts:
+                try:
+                    news_item = session.query(NewsItem).filter(NewsItem.id == post.news_id).first()
+                    if not news_item:
+                        logger.warning(f'Новость с id {post.news_id} не найдена')
+                        continue
 
-        all_news = []
-        for source in telegram_sources:
-            news = asyncio.run(parser.parse(source.url, limit=10))
-            all_news.extend(news)
+                    # TODO: filter existing news by keywords
+                    post_text = generate_posts(news_item)
+                    if not post_text:
+                        post.status = PostStatus.FAILED
+                        logger.warning(f'Не удалось сгенерировать пост для новости {news_item.id}')
+                        continue
 
-        for item in all_news:
-            if item.get('url') is None:
-                continue
+                    post.generated_text = post_text
+                    post.status = PostStatus.GENERATED
+                    generated_count += 1
+                    logger.info(f'Сгенерирован пост для новости {news_item.id}')
 
-            existing = db.query(NewsItem).filter(NewsItem.url == item['url']).first()
-            if not existing:
-                news_item = NewsItem(
-                    id=item.get('id', str(uuid.uuid4())),
-                    title=item.get('title') or '',
-                    url=item['url'],
-                    summary=item.get('summary', ''),
-                    source=item.get('source', 'telegram'),
-                    published_at=item.get('published_at'),
-                    raw_text=item.get('raw_text', '')
-                )
-                db.add(news_item)
-        db.commit()
+                except Exception as e:
+                    logger.error(f'Ошибка при генерации поста для новости {post.news_id}: {e}', exc_info=True)
+                    post.status = PostStatus.FAILED
+                    continue
 
-        return f"Collected {len(all_news)} news from Telegram"
-    finally:
-        db.close()
+            session.commit()
+            logger.info(f'Генерация завершена. Сгенерировано постов: {generated_count}')
 
-@celery.task
-def filter_news_task():
-    """
-    Task: filter news by keywords.
-    """
-    db = SessionLocal()
+            if generated_count > 0:
+                logger.info(f'Запускаем публикацию постов для {generated_count} новых новостей')
+                publish_posts_task.delay()
+
+            return {'status': 'success', 'generated': generated_count}
+
+        except Exception as e:
+            logger.error(f'Ошибка при генерации постов: {e}', exc_info=True)
+            session.rollback()
+            raise
+        finally:
+            try:
+                next(db_gen)
+            except StopIteration:
+                pass
+
+    except Exception as e:
+        logger.error(f'Критическая ошибка при генерации постов: {e}', exc_info=True)
+        raise self.retry(exc=e, countdown=60)
+
+
+@celery_app.task(name='app.tasks.publish_posts', bind=True, max_retries=3)
+def publish_posts_task(self):
+    logger.info('Начинаем публикацию постов')
     try:
-        keywords = db.query(Keyword.word).all()
-        keywords = [k[0] for k in keywords]
+        db_gen = get_db_sync()
+        session = next(db_gen)
+        try:
+            posts = session.query(Post).filter(Post.status == PostStatus.GENERATED).all()
+            if not posts:
+                logger.info('Нет новых постов для публикации')
+                return {'status': 'success', 'published': 0, 'failed': 0}
 
-        news_items = db.query(NewsItem).all()
+            published = failed = 0
+            for post in posts:
+                if not post.generated_text:
+                    logger.warning(f'Пост {post.id} не имеет сгенерированного текста')
+                    continue
 
-        filtered_news = []
-        for item in news_items:
-            if any(keyword.lower() in item.title.lower() or keyword.lower() in item.summary.lower() for keyword in keywords):
-                filtered_news.append(item.id)
+                try:
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    try:
+                        success = loop.run_until_complete(publish_post(post.generated_text))
+                    finally:
+                        loop.close()
 
-        return f"Filtered {len(filtered_news)} news"
-    finally:
-        db.close()
+                    if success:
+                        post.status = PostStatus.PUBLISHED
+                        post.published_at = datetime.now()
+                        logger.info(f'Опубликован пост {post.id}')
+                        published += 1
+                    else:
+                        post.status = PostStatus.FAILED
+                        logger.warning(f'Не удалось опубликовать пост {post.id}')
+                        failed += 1
 
-@celery.task
-def generate_post_task(news_id: str):
+                except Exception as e:
+                    logger.error(f'Ошибка при публикации поста {post.id}: {e}', exc_info=True)
+                    post.status = PostStatus.FAILED
+                    failed += 1
+                    continue
+
+            session.commit()
+            logger.info(f'Публикация завершена. Опубликовано постов: {published}. Провалено постов: {failed}')
+            return {'status': 'success', 'published': published, 'failed': failed}
+        except Exception as e:
+            logger.error(f'Ошибка при публикации постов: {e}', exc_info=True)
+            session.rollback()
+            raise
+        finally:
+            try:
+                next(db_gen)
+            except StopIteration:
+                pass
+
+    except Exception as e:
+        logger.error(f'Критическая ошибка при публикации постов: {e}', exc_info=True)
+        raise self.retry(exc=e, countdown=60)
+
+
+def generate_post_task():
     """
-    Task: generate a post via AI.
+    Функция для вызова из API (ручной запуск генерации)
     """
-    db = SessionLocal()
-    try:
-        news_item = db.query(NewsItem).filter(NewsItem.id == news_id).first()
-        if not news_item:
-            return "News not found"
-
-        generated_text = generate_post(news_item.summary)
-
-        post = Post(
-            news_id=news_item.id,
-            generated_text=generated_text,
-            status='generated'
-        )
-        db.add(post)
-        db.commit()
-
-        return f"Post for news {news_id} generated"
-    finally:
-        db.close()
-
-@celery.task
-def publish_post_task(post_id: str):
-    """
-    Task: publish a post in the Telegram channel.
-    """
-    db = SessionLocal()
-    try:
-        post = db.query(Post).filter(Post.id == post_id).first()
-        if not post or post.status != 'generated':
-            return "Post is not ready for publication"
-
-        result = publish_post_to_telegram(post.generated_text)
-
-        if result == 'published':
-            post.status = 'published'
-            db.commit()
-            return f"Post {post_id} published"
-        else:
-            post.status = 'failed'
-            db.commit()
-            return f"Post {post_id} not published"
-    finally:
-        db.close()
+    return generate_posts_task.delay()

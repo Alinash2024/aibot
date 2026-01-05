@@ -5,15 +5,19 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
+    "asyncpg>=0.30.0",
     "bs4>=0.0.2",
+    "celery>=5.6.0",
+    "celery-types==0.23.0",
     "fastapi>=0.125.0",
     "openai>=2.13.0",
+    "psycopg[c]>=3.3.2",
     "pydantic-settings>=2.12.0",
+    "redis>=7.1.0",
+    "requests>=2.32.5",
+    "sqlalchemy>=2.0.45",
     "telethon>=1.42.0",
+    "uuid>=1.30",
     "uvicorn>=0.38.0",
-    "celery>=5.2.0",
-    "redis>=4.0.0",
     "python-decouple>=3.8",
-    "sqlalchemy>=2.0.0",
-    "requests>=2.32.0",
 ]

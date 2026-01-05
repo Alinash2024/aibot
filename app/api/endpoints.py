@@ -1,142 +1,185 @@
-from fastapi import APIRouter, HTTPException, Depends
-from sqlalchemy.orm import Session
-from app.models import Source, Keyword, Post, SessionLocal, NewsItem
-from app.api.schemas import Source as SourceSchema, SourceCreate, SourceUpdate, Keyword as KeywordSchema, KeywordCreate, \
-    KeywordUpdate, Post as PostSchema, GeneratePostRequest
-from app.tasks import generate_post_task
+import logging
 from typing import List
 
-router = APIRouter()
+from fastapi import APIRouter, Depends
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.exceptions import HTTPException
+from starlette.status import HTTP_404_NOT_FOUND, HTTP_204_NO_CONTENT
+
+from app.api.schemas import (
+    SourceResponse,
+    SourceCreate,
+    SourceUpdate,
+    PostResponse,
+    TelegramAuthRequest,
+    TelegramAuthResponse
+)
+from app.database import get_db, Source, Post
+from app.tasks import publish_posts_task, parse_news
+from app.telegram.bot import authorize_telegram, get_telegram_client
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix='/api', tags=['api'])
 
 
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-
-
-@router.get("/sources/", response_model=List[SourceSchema])
-def read_sources(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
-    sources = db.query(Source).offset(skip).limit(limit).all()
+@router.get('/sources/', response_model=List[SourceResponse])
+async def get_sources(
+        offset: int = 0,
+        limit: int = 20,
+        db: AsyncSession = Depends(get_db)
+):
+    result = await db.execute(select(Source).offset(offset).limit(limit))
+    sources = result.scalars().all()
     return sources
 
 
-@router.post("/sources/", response_model=SourceSchema)
-def create_source(source: SourceCreate, db: Session = Depends(get_db)):
-    db_source = Source(**source.dict())
-    db.add(db_source)
-    db.commit()
-    db.refresh(db_source)
-    return db_source
-
-
-@router.get("/sources/{source_id}", response_model=SourceSchema)
-def read_source(source_id: int, db: Session = Depends(get_db)):
-    source = db.query(Source).filter(Source.id == source_id).first()
+@router.get('/sources/{source_id}', response_model=SourceResponse)
+async def get_source(
+        source_id: str,
+        db: AsyncSession = Depends(get_db)
+):
+    source = await db.get(Source, source_id)
     if not source:
-        raise HTTPException(status_code=404, detail="Source not found")
+        raise HTTPException(HTTP_404_NOT_FOUND, 'Источник с данным id не найден')
     return source
 
 
-@router.put("/sources/{source_id}", response_model=SourceSchema)
-def update_source(source_id: int, source: SourceUpdate, db: Session = Depends(get_db)):
-    db_source = db.query(Source).filter(Source.id == source_id).first()
-    if not db_source:
-        raise HTTPException(status_code=404, detail="Source not found")
-
-    for key, value in source.dict(exclude_unset=True).items():
-        setattr(db_source, key, value)
-
-    db.commit()
-    db.refresh(db_source)
-    return db_source
+@router.post('/sources/', status_code=201, response_model=SourceResponse)
+async def create_resource(
+        source_data: SourceCreate,
+        db: AsyncSession = Depends(get_db)
+):
+    source = Source(**source_data.model_dump())
+    db.add(source)
+    await db.commit()
+    await db.refresh(source)
+    return source
 
 
-@router.delete("/sources/{source_id}")
-def delete_source(source_id: int, db: Session = Depends(get_db)):
-    source = db.query(Source).filter(Source.id == source_id).first()
+@router.put('/sources/{source_id}', response_model=SourceResponse)
+async def update_source(
+        source_id: str,
+        source_data: SourceUpdate,
+        db: AsyncSession = Depends(get_db)
+):
+    source = await db.get(Source, source_id)
     if not source:
-        raise HTTPException(status_code=404, detail="Source not found")
+        raise HTTPException(HTTP_404_NOT_FOUND, 'Источник с данным id не найден')
 
-    db.delete(source)
-    db.commit()
-    return {"detail": "Source deleted"}
+    source_data = source_data.model_dump(exclude_unset=True)
+    for key, value in source_data.items():
+        setattr(source, key, value)
 
-
-
-@router.get("/keywords/", response_model=List[KeywordSchema])
-def read_keywords(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
-    keywords = db.query(Keyword).offset(skip).limit(limit).all()
-    return keywords
+    await db.commit()
+    await db.refresh(source)
+    return source
 
 
-@router.post("/keywords/", response_model=KeywordSchema)
-def create_keyword(keyword: KeywordCreate, db: Session = Depends(get_db)):
-    db_keyword = Keyword(**keyword.dict())
-    db.add(db_keyword)
-    db.commit()
-    db.refresh(db_keyword)
-    return db_keyword
+@router.delete('/sources/{source_id}', status_code=HTTP_204_NO_CONTENT)
+async def delete_source(
+        source_id: str,
+        db: AsyncSession = Depends(get_db)
+):
+    source = await db.get(Source, source_id)
+    if not source:
+        raise HTTPException(HTTP_404_NOT_FOUND, 'Источник с данным id не найден')
+    await db.delete(source)
+    await db.commit()
 
 
-@router.get("/keywords/{keyword_id}", response_model=KeywordSchema)
-def read_keyword(keyword_id: int, db: Session = Depends(get_db)):
-    keyword = db.query(Keyword).filter(Keyword.id == keyword_id).first()
-    if not keyword:
-        raise HTTPException(status_code=404, detail="Keyword not found")
-    return keyword
-
-
-@router.put("/keywords/{keyword_id}", response_model=KeywordSchema)
-def update_keyword(keyword_id: int, keyword: KeywordUpdate, db: Session = Depends(get_db)):
-    db_keyword = db.query(Keyword).filter(Keyword.id == keyword_id).first()
-    if not db_keyword:
-        raise HTTPException(status_code=404, detail="Keyword not found")
-
-    for key, value in keyword.dict(exclude_unset=True).items():
-        setattr(db_keyword, key, value)
-
-    db.commit()
-    db.refresh(db_keyword)
-    return db_keyword
-
-
-@router.delete("/keywords/{keyword_id}")
-def delete_keyword(keyword_id: int, db: Session = Depends(get_db)):
-    keyword = db.query(Keyword).filter(Keyword.id == keyword_id).first()
-    if not keyword:
-        raise HTTPException(status_code=404, detail="Keyword not found")
-
-    db.delete(keyword)
-    db.commit()
-    return {"detail": "Keyword deleted"}
-
-
-
-@router.get("/posts/", response_model=List[PostSchema])
-def read_posts(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
-    posts = db.query(Post).offset(skip).limit(limit).all()
+@router.get('/posts/', response_model=List[PostResponse])
+async def get_posts(
+        offset: int = 0,
+        limit: int = 20,
+        db: AsyncSession = Depends(get_db)
+):
+    result = await db.execute(select(Post).offset(offset).limit(limit))
+    posts = result.scalars().all()
     return posts
 
 
-@router.get("/posts/{post_id}", response_model=PostSchema)
-def read_post(post_id: int, db: Session = Depends(get_db)):
-    post = db.query(Post).filter(Post.id == post_id).first()
+@router.get('/posts/{post_id}', response_model=PostResponse)
+async def get_post(
+        post_id: str,
+        db: AsyncSession = Depends(get_db)
+):
+    post = await db.get(Post, post_id)
     if not post:
-        raise HTTPException(status_code=404, detail="Post not found")
+        raise HTTPException(HTTP_404_NOT_FOUND, 'Пост с данным id не найден')
     return post
 
 
+@router.post('/publish-posts/', status_code=200)
+async def publish_posts():
+    publish_posts_task.delay()
+    return {'status': 'started'}
 
-@router.post("/generate/", summary="Start generating a post manually")
-def manual_generate_post(request: GeneratePostRequest, db: Session = Depends(get_db)):
-    news_item = db.query(NewsItem).filter(NewsItem.id == request.news_id).first()
-    if not news_item:
-        raise HTTPException(status_code=404, detail="News item not found")
 
-    result = generate_post_task.delay(news_item.id)
+@router.post('/parse-sources/', status_code=200)
+async def parse_sources():
+    parse_news.delay()
+    return {'status': 'started'}
 
-    return {"task_id": result.id, "message": f"Generation started for news {request.news_id}"}
+
+@router.post('/telegram/authorize/', response_model=TelegramAuthResponse)
+async def authorize_telegram_endpoint(request: TelegramAuthRequest):
+    """
+    Процесс авторизации:
+    1. Первый запрос: отправьте только phone - получите код в Telegram
+    2. Второй запрос: отправьте phone и code - авторизуетесь
+    3. Если требуется 2FA: отправьте phone, code и password
+    """
+    result = await authorize_telegram(
+        phone=request.phone,
+        code=request.code,
+        password=request.password
+    )
+    return TelegramAuthResponse(**result)
+
+
+@router.get('/telegram/status/')
+async def get_telegram_status():
+    from telethon import TelegramClient
+    from app.config import settings
+
+    if not settings.TELERGAM_API_ID or not settings.TELERGAM_API_HASH:
+        return {
+            'authorized': False,
+            'message': 'Telegram credentials not configured'
+        }
+
+    client = TelegramClient(
+        settings.TELERGAM_SESSION_NAME,
+        settings.TELERGAM_API_ID,
+        settings.TELERGAM_API_HASH
+    )
+
+    try:
+        await client.connect()
+
+        if await client.is_user_authorized():
+            me = await client.get_me()
+            return {
+                'authorized': True,
+                'phone': me.phone,
+                'username': me.username,
+                'first_name': me.first_name,
+                'last_name': me.last_name
+            }
+        else:
+            return {
+                'authorized': False,
+                'message': 'Telegram client not authorized'
+            }
+    except Exception as e:
+        return {
+            'authorized': False,
+            'message': f'Error checking status: {str(e)}'
+        }
+    finally:
+        await client.disconnect()
+
+# TODO: CRUD for keywords
+# TODO: list and retrieve for news

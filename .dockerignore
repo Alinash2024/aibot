@@ -1,26 +1,31 @@
-# Environment variables
-.env
-
-# Python cache
+# Python
 __pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
 
 # Virtual environments
+venv/
 .venv/
+env/
+.ENV
 
-# IDE settings
+# Git
+.git/
+
+# IDE
+.vscode/
 .idea/
 
-# Sessions
-sessions/
-!sessions/.gitkeep
+# Environment files
+.env
+.env.*
 
-# Database
-aibot.db
+# Docker
+.dockerignore
 
-# Distribution / packaging
-*.egg-info/
-
-# Celery beat schedule
-celerybeat-schedule
-celerybeat-schedule-shm
-celerybeat-schedule-wal
+# OS
+.DS_Store
+Thumbs.db

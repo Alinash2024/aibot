@@ -1,26 +1,50 @@
+import logging
+
 from telethon import TelegramClient
-import asyncio
 
-class TelegramPublisher:
-    def __init__(self, api_id: str, api_hash: str, phone: str):
-        self.client = TelegramClient('session_name', api_id, api_hash)
-        self.phone = phone
+from app.config import settings
 
-    async def start(self):
-        await self.client.start(phone=self.phone)
+logger = logging.getLogger(__name__)
 
-    async def send_message(self, channel_username: str, message: str):
-        await self.client.send_message(channel_username, message)
-        return 'published'
 
-    async def disconnect(self):
-        await self.client.disconnect()
+def _create_telegram_client() -> TelegramClient | None:
+    if not settings.TELERGAM_API_ID or not settings.TELERGAM_API_HASH:
+        logger.error('Telegram credentials not set')
+        return None
 
-    def sync_send_message(self, channel_username: str, message: str):
-        async def run():
-            await self.start()
-            result = await self.send_message(channel_username, message)
-            await self.disconnect()
-            return result
+    return TelegramClient(
+        settings.TELERGAM_SESSION_NAME,
+        settings.TELERGAM_API_ID,
+        settings.TELERGAM_API_HASH
+    )
 
-        return asyncio.run(run())
+
+async def publish_post(text: str, channel_name: str | None = None) -> bool:
+    client = _create_telegram_client()
+    if not client:
+        logger.error('Telegram client not set')
+        return False
+
+    target_channel = channel_name or settings.TELERGAM_CHANNEL_USERNAME
+    if not target_channel:
+        logger.error('Telegram channel not configured')
+        return False
+
+    if target_channel.startswith('@'):
+        target_channel = target_channel[1:]
+
+    try:
+        await client.connect()
+
+        if not await client.is_user_authorized():
+            logger.error('Telegram client not authorized. Use /api/telegram/authorize/ to authorize')
+            return False
+
+        await client.send_message(target_channel, text)
+        logger.info(f'Пост успешно опубликован в канал: {target_channel}')
+        return True
+    except Exception as e:
+        logger.error(f'Publishing post failed: {e}', exc_info=True)
+        return False
+    finally:
+        await client.disconnect()
